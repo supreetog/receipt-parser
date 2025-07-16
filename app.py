@@ -164,24 +164,1305 @@ def parse_receipt_text(text):
     lines = text.strip().split('\n')
     items = []
     
-    # Enhanced skip patterns
+    # Enhanced skip patterns - more specific to avoid false positives
     skip_patterns = [
-        r'total|subtotal|tax|change|cash|card|credit|debit',
-        r'receipt|thank|you|store|date|time|cashier',
-        r'transaction|balance|tender|qty|quantity|amount|due|paid',
-        r'discount|coupon|visa|mastercard|amex|discover',
-        r'walmart|target|costco|kroger|safeway',  # Store names
-        r'st#|op#|te#|tr#|tc#|ref|aid|terminal',  # Transaction codes
-        r'survey|feedback|delivery|scan|trial',
-        r'manager|supercenter|phone|address',
-        r'^\d{3}-\d{3}-\d{4}',  # Phone numbers
-        r'^\d{5}$',  # Zip codes
-        r'mcard|tend|signature|required',
-        r'^\d{2}/\d{2}/\d{2}',  # Dates
-        r'^\d{2}:\d{2}:\d{2}',  # Times
-        r'low\s+prices|you\s+can\s+trust',
-        r'^\s*\d+\s*$',  # Lines with just numbers
-        r'^\s*[A-Z]{2}\s+\d+\s*$',  # State codes
+        r'^(sub)?total\s*\d+\.\d{2}',  # Total lines
+        r'^tax\d?\s*\d+\.\d{2}',      # Tax lines
+        r'^change\s+due',              # Change due
+        r'^cash|^card|^credit|^debit', # Payment methods
+        r'receipt|thank\s+you',        # Receipt footer
+        r'store\s+\d+|manager',        # Store info
+        r'st#\s+\d+|op#\s+\d+|te#\s+\d+|tr#\s+\d+|tc#\s+\d+',  # Transaction codes
+        r'ref\s+#|aid\s+[A-Z0-9]+|terminal\s+#',  # Reference codes
+        r'survey|feedback|delivery|scan.*trial',   # Marketing text
+        r'^\d{3}-\d{3}-\d{4}',         # Phone numbers
+        r'^\d{5}\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),                 # Zip codes alone
+        r'mcard\s+tend|signature\s+required',  # Payment info
+        r'^\d{2}/\d{2}/\d{2,4}',       # Dates
+        r'^\d{1,2}:\d{2}:\d{2}',       # Times
+        r'low\s+prices.*trust',        # Walmart slogan
+        r'^\s*\d+\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),                # Lines with just numbers
+        r'^\s*[A-Z]{2}\s+\d+\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),     # State codes
+        r'^\s*\d{10,}\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),            # Long product codes alone
+        r'get\s+free\s+delivery',      # Marketing
+        r'walmart\s*\+?
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),             # Store name alone
+        r'supercenter\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),            # Store type alone
+        r'mountain\s+view\s+ca',       # Address
+        r'^\s*\d+\s+[A-Z]+\s+[A-Z]+\s+\d+\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),  # Address-like patterns
     ]
     
     # Compile patterns for efficiency
@@ -196,56 +1477,962 @@ def parse_receipt_text(text):
         if skip_regex.search(line):
             continue
         
-        # Skip lines that are mostly numbers (like barcodes)
-        if re.match(r'^\d+$', line) and len(line) > 8:
+        # Skip lines that are mostly numbers (like barcodes) but allow short codes
+        if re.match(r'^\d+
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(), line) and len(line) > 12:
             continue
         
         # Look for price in the line
         price = extract_price_from_line(line)
         if price and price > 0:
             # Extract item name (everything before the price)
-            # Try multiple methods to clean the item name
             item_name = line
             
-            # Remove price from item name
+            # Remove price from item name - be more specific
             price_patterns = [
-                r'\d{1,3}(?:,\d{3})*\.\d{2}',
-                r'\d+\.\d{2}',
-                r'\d+,\d{2}',
-                r'\$\s*\d+\.\d{2}',
+                r'\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*X?\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),  # Price with optional X at end
+                r'\s*\d+\.\d{2}\s*X?\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),                 # Standard price with optional X
+                r'\s*\d+,\d{2}\s*X?\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),                  # European format
+                r'\s*\$\s*\d+\.\d{2}\s*X?\s*
+
+def create_download_link(df, filename):
+    """Create a download link for the dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
+    return href
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    
+    # Sidebar for instructions
+    with st.sidebar:
+        st.markdown("## 📋 Instructions")
+        st.markdown("""
+        1. **Upload** your receipt (PDF or image)
+        2. **Review** the extracted text
+        3. **Download** the parsed data as CSV
+        4. **Import** to Google Sheets or Excel
+        """)
+        
+        st.markdown("## 🔧 Supported Formats")
+        st.markdown("""
+        - **Images**: JPG, PNG, GIF, BMP, TIFF
+        - **PDFs**: Single or multi-page
+        """)
+        
+        st.markdown("## 💡 Tips for Better Results")
+        st.markdown("""
+        - Use good lighting when taking photos
+        - Keep the receipt flat and straight
+        - Ensure text is clearly visible
+        - Avoid shadows and reflections
+        - Higher resolution images work better
+        """)
+        
+        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("""
+        This version includes:
+        - Image preprocessing for better OCR
+        - Enhanced text cleaning
+        - Better price pattern recognition
+        - Improved item name extraction
+        """)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("## 📤 Upload Receipt")
+        uploaded_file = st.file_uploader(
+            "Choose a receipt file",
+            type=['pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'],
+            help="Upload a PDF or image file of your receipt"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info
+        st.markdown(f"**File:** {uploaded_file.name}")
+        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        
+        # Process the file
+        file_type = uploaded_file.name.lower().split('.')[-1]
+        
+        with col2:
+            st.markdown("## 👀 Preview")
+            
+            if file_type == 'pdf':
+                st.markdown("📄 PDF uploaded - processing...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                
+                # Show PDF preview if possible
+                try:
+                    uploaded_file.seek(0)
+                    images = convert_from_bytes(uploaded_file.read(), dpi=150)
+                    if images:
+                        st.image(images[0], caption="First page preview", use_column_width=True)
+                except Exception as e:
+                    st.warning("Could not create PDF preview")
+                    
+            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
+                st.markdown("🖼️ Image uploaded - processing...")
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded image", use_column_width=True)
+                extracted_text = extract_text_from_image(image)
+            
+            else:
+                st.error("❌ Unsupported file type")
+                return
+        
+        # Show extracted text
+        if extracted_text:
+            st.markdown("## 📝 Extracted Text")
+            with st.expander("Click to view extracted text", expanded=False):
+                st.text_area(
+                    "Extracted text:",
+                    value=extracted_text,
+                    height=200,
+                    help="This is the raw text extracted from your receipt"
+                )
+            
+            # Parse items
+            with st.spinner("🔍 Parsing receipt items..."):
+                items = parse_receipt_text(extracted_text)
+            
+            if items:
+                # Create dataframe and remove debug column for display
+                df = pd.DataFrame(items)
+                display_df = df.drop('Original Line', axis=1)
+                
+                st.markdown("## 📊 Parsed Items")
+                st.success(f"✅ Found {len(items)} items!")
+                
+                # Display the dataframe
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Show debugging info
+                with st.expander("🔍 Debug Information", expanded=False):
+                    st.markdown("**Items with original lines:**")
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
+                        st.markdown(f"*Original line:* `{item['Original Line']}`")
+                        st.markdown("---")
+                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Items", len(display_df))
+                with col2:
+                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                with col3:
+                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                
+                # Download options
+                st.markdown("## 💾 Download Options")
+                
+                # Generate filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"receipt_items_{timestamp}.csv"
+                
+                # Create download link
+                st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
+                
+                # Google Sheets format
+                st.markdown("### 📋 Copy to Google Sheets")
+                st.info("Copy the data below and paste it directly into Google Sheets:")
+                
+                # Create tab-separated format for Google Sheets
+                sheets_data = display_df.to_csv(sep='\t', index=False)
+                st.text_area(
+                    "Google Sheets format (tab-separated):",
+                    value=sheets_data,
+                    height=150,
+                    help="Select all and copy, then paste into Google Sheets"
+                )
+                
+            else:
+                st.warning("❌ No items found in the receipt")
+                st.markdown("### 🔍 Debugging Information")
+                st.markdown("**Possible reasons:**")
+                st.markdown("- The image quality might be too low")
+                st.markdown("- The receipt format is not recognized")
+                st.markdown("- The text extraction didn't work properly")
+                st.markdown("- Try taking a clearer photo with better lighting")
+                
+                st.markdown("**Raw extracted text:**")
+                st.text_area("", value=extracted_text, height=300)
+        else:
+            st.error("❌ Could not extract text from the file")
+            st.markdown("**Troubleshooting tips:**")
+            st.markdown("- Make sure the image is clear and readable")
+            st.markdown("- Try a different image format")
+            st.markdown("- Ensure the receipt is well-lit in the photo")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("**Made with ❤️ for easy receipt processing**")
+    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+
+if __name__ == "__main__":
+    main(),           # With dollar sign
             ]
             
             for pattern in price_patterns:
                 item_name = re.sub(pattern, '', item_name)
             
-            # Remove X (quantity indicators)
-            item_name = re.sub(r'\s+X\s*$', '', item_name, flags=re.IGNORECASE)
+            # Remove product codes (long numbers) but keep shorter ones
+            item_name = re.sub(r'\b\d{12,}\b', '', item_name)
             
-            # Remove product codes (long numbers)
-            item_name = re.sub(r'\b\d{10,}\b', '', item_name)
-            
-            # Clean up
+            # Clean up item name more carefully
             item_name = item_name.strip()
-            item_name = re.sub(r'\s+', ' ', item_name)  # Multiple spaces to single
-            item_name = re.sub(r'[^\w\s]', ' ', item_name)  # Remove special chars
-            item_name = ' '.join(item_name.split())  # Final cleanup
             
-            # Skip if item name is too short or looks like a code
-            if len(item_name) < 2 or item_name.isdigit():
-                continue
+            # Remove extra spaces but preserve structure
+            item_name = re.sub(r'\s+', ' ', item_name)
             
-            # Skip if item name contains mostly digits
-            if sum(c.isdigit() for c in item_name) / len(item_name) > 0.5:
-                continue
+            # Only remove truly problematic characters, keep letters and numbers
+            item_name = re.sub(r'[^\w\s&+\-/]', ' ', item_name)
+            item_name = ' '.join(item_name.split())
             
-            # Check if price is reasonable (between $0.01 and $999.99)
-            if 0.01 <= price <= 999.99:
-                items.append({
-                    'Item': item_name,
-                    'Amount': price,
-                    'Date Processed': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'Original Line': line  # Keep for debugging
-                })
+            # More lenient validation for item names
+            if len(item_name) >= 2 and not item_name.isdigit():
+                # Allow more items through - don't filter by digit ratio for short names
+                if len(item_name) <= 10 or sum(c.isdigit() for c in item_name) / len(item_name) < 0.7:
+                    # Check if price is reasonable (between $0.01 and $999.99)
+                    if 0.01 <= price <= 999.99:
+                        items.append({
+                            'Item': item_name,
+                            'Amount': price,
+                            'Date Processed': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'Original Line': line  # Keep for debugging
+                        })
     
     return items
 
