@@ -353,7 +353,8 @@ def parse_receipt_text(text):
             # Check if price is reasonable (between $0.01 and $999.99)
             if 0.01 <= price <= 999.99:
                 # ENHANCED: Final contextual check - is this price suspiciously similar to running total?
-                if processed_items:
+                # Only apply this check if the item name looks like it could be a summary
+                if processed_items and len(item_name) < 10:  # Only check short names that might be summaries
                     running_total = sum(item['Amount'] for item in processed_items)
                     # If this price is very close to the running total, it might be a subtotal
                     if abs(price - running_total) < 0.05:  # Within 5 cents
@@ -367,16 +368,15 @@ def parse_receipt_text(text):
                     'Original Line': original_line.strip()
                 }
                 
-                # Check for exact duplicates (same item name and price)
+                # Check for exact duplicates (same item name, price, AND original line)
+                # This prevents processing the same line twice but allows legitimate multiples
                 is_duplicate = False
                 for existing_item in processed_items:
-                    if (existing_item['Item'] == item_name and 
-                        existing_item['Amount'] == price and
-                        existing_item['Original Line'] == original_line.strip()):
+                    if existing_item['Original Line'] == original_line.strip():
                         is_duplicate = True
                         break
                 
-                # Only add if not an exact duplicate
+                # Only add if not processing the same line twice
                 if not is_duplicate:
                     processed_items.append(item_entry)
                     items.append(item_entry)
