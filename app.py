@@ -164,40 +164,116 @@ def extract_price_from_line(line):
     
     return None
 
+def is_summary_line(line, all_items_so_far):
+    """
+    Enhanced function to detect if a line is a summary line (subtotal, total, tax, etc.)
+    Uses context from previously found items to make better decisions
+    """
+    line_lower = line.lower().strip()
+    
+    # Basic summary line patterns - more comprehensive
+    summary_patterns = [
+        # Totals and subtotals
+        r'^\s*total\s*$|^\s*subtotal\s*$|^\s*sub\s*total\s*$|^\s*sub-total\s*$',
+        r'^\s*grand\s*total\s*$|^\s*final\s*total\s*$|^\s*order\s*total\s*$',
+        r'^\s*balance\s*$|^\s*amount\s*due\s*$|^\s*total\s*due\s*$',
+        r'^\s*net\s*total\s*$|^\s*gross\s*total\s*$',
+        
+        # Tax lines
+        r'^\s*tax\s*$|^\s*sales\s*tax\s*$|^\s*tax\s*\d*\s*$',
+        r'^\s*hst\s*$|^\s*gst\s*$|^\s*pst\s*$|^\s*vat\s*$',
+        r'^\s*state\s*tax\s*$|^\s*city\s*tax\s*$|^\s*local\s*tax\s*$',
+        
+        # Payment related
+        r'^\s*change\s*$|^\s*cash\s*$|^\s*card\s*$|^\s*credit\s*$|^\s*debit\s*$',
+        r'^\s*payment\s*$|^\s*tender\s*$|^\s*tendered\s*$',
+        r'^\s*visa\s*$|^\s*mastercard\s*$|^\s*amex\s*$|^\s*discover\s*$',
+        
+        # Discounts and fees
+        r'^\s*discount\s*$|^\s*coupon\s*$|^\s*savings\s*$|^\s*promo\s*$',
+        r'^\s*delivery\s*fee\s*$|^\s*service\s*fee\s*$|^\s*tip\s*$',
+        r'^\s*bag\s*fee\s*$|^\s*bottle\s*deposit\s*$|^\s*crv\s*$',
+        
+        # Transaction details
+        r'^\s*receipt\s*$|^\s*transaction\s*$|^\s*order\s*$|^\s*invoice\s*$',
+        r'^\s*ref\s*#|^\s*reference\s*$|^\s*confirmation\s*$',
+        
+        # Common receipt footer items
+        r'^\s*thank\s*you\s*$|^\s*have\s*a\s*nice\s*day\s*$|^\s*come\s*again\s*$',
+        r'^\s*store\s*$|^\s*cashier\s*$|^\s*register\s*$|^\s*terminal\s*$',
+        
+        # Lines that contain "total" or "subtotal" anywhere
+        r'.*total.*|.*subtotal.*|.*sub\s*total.*',
+    ]
+    
+    # Check basic patterns
+    for pattern in summary_patterns:
+        if re.search(pattern, line_lower):
+            return True
+    
+    # Additional contextual checks
+    price = extract_price_from_line(line)
+    if price and all_items_so_far:
+        # If this line's price is suspiciously close to sum of previous items
+        previous_total = sum(item['Amount'] for item in all_items_so_far)
+        
+        # Check if this price is close to the sum of previous items (within 20%)
+        if abs(price - previous_total) / max(previous_total, 0.01) < 0.2:
+            # This might be a subtotal, but let's check the item name
+            item_name = line
+            # Remove price from item name
+            for pattern in [r'\$?\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*X?', r'\$?\s*\d+\.\d{2}\s*X?']:
+                item_name = re.sub(pattern, '', item_name)
+            item_name = item_name.strip().lower()
+            
+            # If the remaining text is very short or looks like a summary
+            if len(item_name) < 3 or any(word in item_name for word in ['total', 'subtotal', 'tax', 'due', 'balance']):
+                return True
+    
+    return False
+
 def parse_receipt_text(text):
-    """Enhanced receipt parsing with better item detection and duplicate handling"""
+    """Enhanced receipt parsing with better total/subtotal detection"""
     lines = text.strip().split('\n')
     items = []
     
     # Enhanced skip patterns - more specific to avoid false positives
     skip_patterns = [
-        r'^\s*total\s*$|^\s*subtotal\s*$|^\s*tax\d?\s*$|^\s*change\s*$|^\s*cash\s*$|^\s*card\s*$',
-        r'^\s*receipt\s*$|^\s*thank\s*you\s*$|^\s*store\s*$|^\s*date\s*$|^\s*time\s*$|^\s*cashier\s*$',
-        r'transaction|balance|tender|qty|quantity|amount\s+due|paid',
-        r'discount|coupon|visa|mastercard|amex|discover',
-        r'walmart|target|costco|kroger|safeway|supercenter',  # Store names
-        r'st#|op#|te#|tr#|tc#|ref|aid|terminal|mgr\.|manager',  # Transaction codes
-        r'survey|feedback|delivery|scan|trial|free\s+delivery',
+        # Store and transaction info
+        r'walmart|target|costco|kroger|safeway|supercenter|grocery|market',
+        r'st#|op#|te#|tr#|tc#|ref|aid|terminal|mgr\.|manager',
+        r'transaction|ref|reference|confirmation|invoice|receipt\s*#',
+        
+        # Date, time, and contact info
+        r'^\d{2}/\d{2}/\d{2,4}|^\d{2}:\d{2}:\d{2}',
         r'phone|address|mountain\s+view|ca\s+\d{5}',
-        r'^\d{3}-\d{3}-\d{4}|^\d{5}$',  # Phone numbers, zip codes
-        r'mcard|tend|signature|required|no\s+signature',
-        r'^\d{2}/\d{2}/\d{2,4}|^\d{2}:\d{2}:\d{2}',  # Dates and times
+        r'^\d{3}-\d{3}-\d{4}|^\d{5}$',
+        
+        # Promotional and feedback
+        r'survey|feedback|delivery|scan|trial|free\s+delivery',
         r'low\s+prices|you\s+can\s+trust|every\s+day',
-        r'^\s*\d+\s*$',  # Lines with just numbers
-        r'^\s*[A-Z]{2}\s+\d+\s*$',  # State codes
-        r'^\s*give\s+us\s+feedback|^\s*scan\s+for',  # Feedback requests
-        r'^\s*items\s+sold\s+\d+',  # Items sold line
-        r'^\s*appr#|^\s*ref\s+#|^\s*aid\s+a',  # Transaction references
-        r'^\s*\d+\s+i\s+\d+\s+appr',  # Approval codes
-        r'^\s*\d+\.\d+\s+total\s+purchase',  # Total purchase line
-        r'^\s*get\s+free\s+delivery|^\s*with\s+walmart',  # Promotional text
-        r'^\s*\d+\s+showers\s+dr',  # Address lines
+        r'give\s+us\s+feedback|scan\s+for|get\s+free\s+delivery',
+        r'with\s+walmart|supercenter|store\s+hours',
+        
+        # Transaction codes and technical info
+        r'mcard|tend|signature|required|no\s+signature',
+        r'appr#|ref\s+#|aid\s+a|approval',
+        r'^\s*\d+\s+i\s+\d+\s+appr',
+        r'^\s*items\s+sold\s+\d+',
+        
+        # Lines that are just numbers or codes
+        r'^\s*\d+\s*$',
+        r'^\s*[A-Z]{2}\s+\d+\s*$',
+        r'^\d{12,}$',  # UPC codes
+        
+        # Address-like patterns
+        r'^\s*\d+\s+\w+\s+dr|^\s*\d+\s+\w+\s+st|^\s*\d+\s+\w+\s+ave',
     ]
     
     # Compile patterns for efficiency
     skip_regex = re.compile('|'.join(skip_patterns), re.IGNORECASE)
     
-    # Track processed items to handle duplicates better
+    # Track processed items to handle duplicates and context
     processed_items = []
     
     for i, line in enumerate(lines):
@@ -208,6 +284,10 @@ def parse_receipt_text(text):
         
         # Skip obvious header/footer lines
         if skip_regex.search(line):
+            continue
+        
+        # ENHANCED: Check if this is a summary line using context
+        if is_summary_line(line, processed_items):
             continue
         
         # Skip lines that are mostly numbers (like barcodes) but longer than 8 chars
@@ -264,8 +344,21 @@ def parse_receipt_text(text):
             if len(item_name) > 0 and sum(c.isdigit() for c in item_name) / len(item_name) > 0.7:
                 continue
             
+            # ENHANCED: Additional check for summary-like item names
+            item_name_lower = item_name.lower()
+            summary_words = ['total', 'subtotal', 'tax', 'due', 'balance', 'change', 'payment', 'cash', 'card']
+            if any(word in item_name_lower for word in summary_words):
+                continue
+            
             # Check if price is reasonable (between $0.01 and $999.99)
             if 0.01 <= price <= 999.99:
+                # ENHANCED: Final contextual check - is this price suspiciously similar to running total?
+                if processed_items:
+                    running_total = sum(item['Amount'] for item in processed_items)
+                    # If this price is very close to the running total, it might be a subtotal
+                    if abs(price - running_total) < 0.05:  # Within 5 cents
+                        continue
+                
                 # Create item entry
                 item_entry = {
                     'Item': item_name,
@@ -328,12 +421,12 @@ def main():
         
         st.markdown("## ⚙️ OCR Settings")
         st.markdown("""
-        This version includes:
-        - Image preprocessing for better OCR
-        - Enhanced text cleaning
-        - Better price pattern recognition
-        - Improved item name extraction
-        - Better duplicate handling
+        **Enhanced v2.0 includes:**
+        - Better subtotal/total detection
+        - Contextual summary line filtering
+        - Improved price validation
+        - Enhanced duplicate handling
+        - Running total validation
         """)
     
     # Main content area
@@ -468,7 +561,7 @@ def main():
     # Footer
     st.markdown("---")
     st.markdown("**Made with ❤️ for easy receipt processing**")
-    st.markdown("*Enhanced with better OCR and parsing algorithms*")
+    st.markdown("*Enhanced v2.0 with better total/subtotal filtering*")
 
 if __name__ == "__main__":
     main()
