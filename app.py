@@ -159,8 +159,33 @@ class ReceiptParser:
                     continue
         
         return datetime.now().strftime("%m/%d/%Y")
+
+    def extract_total(self, lines):
+        """Extract total amount from receipt"""
+        total_patterns = [
+            r'total[:\s]*\$?(\d+\.?\d*)',
+            r'amount[:\s]*\$?(\d+\.?\d*)',
+            r'balance[:\s]*\$?(\d+\.?\d*)',
+            r'\$(\d+\.\d{2})\s*$'
+        ]
+
+        for line in reversed(lines):  # Start from bottom
+            line_lower = line.lower()
+            for pattern in total_patterns:
+                match = re.search(pattern, line_lower)
+                if match:
+                    amount = match.group(1)
+                    try:
+                        float_amount = float(amount)
+                        if 0.01 <= float_amount <= 10000:
+                            return f"${float_amount:.2f}"
+                    except ValueError:
+                        continue
+
+        return "Not found"
     
-        def extract_items(self, lines):
+    
+    def extract_items(self, lines):
             """Extract individual items from receipt (excluding totals, tax, and non-item lines)"""
         items = []
 
