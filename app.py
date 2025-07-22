@@ -186,24 +186,24 @@ class ReceiptParser:
         
         return "Not found"
     
-   def extract_items(self, lines):
-    """Extract individual items from receipt (excluding totals, tax, etc.)"""
-    items = []
+       def extract_items(self, lines):
+        """Extract individual items from receipt (excluding totals, tax, etc.)"""
+        items = []
+        
+        # Expanded skip keywords
+        skip_terms = [
+            'total', 'subtotal', 'tax', 'change', 'cash', 'credit', 'debit',
+            'receipt', 'thank', 'visit', 'store', 'phone', 'address',
+            'balance', 'tender', 'due', 'payment', 'discount', 'card', 'visa', 'mastercard'
+        ]
     
-    # Expanded skip keywords
-    skip_terms = [
-        'total', 'subtotal', 'tax', 'change', 'cash', 'credit', 'debit',
-        'receipt', 'thank', 'visit', 'store', 'phone', 'address',
-        'balance', 'tender', 'due', 'payment', 'discount', 'card', 'visa', 'mastercard'
-    ]
-
-    # Item patterns: text + price at the end
-    item_patterns = [
-        r'^(.+?)\s+\$?(\d+\.\d{2})$',               # e.g., "Apple $1.99"
-        r'^(.+?)\s+(\d+\.\d{2})$',                  # e.g., "Banana 0.99"
-        r'^(.+?)\s+\$?(\d+)$',                      # e.g., "Milk $2"
-        r'^(.+?)\s+(\d+)$',                         # e.g., "Bread 3"
-    ]
+        # Item patterns: text + price at the end
+        item_patterns = [
+            r'^(.+?)\s+\$?(\d+\.\d{2})$',               # e.g., "Apple $1.99"
+            r'^(.+?)\s+(\d+\.\d{2})$',                  # e.g., "Banana 0.99"
+            r'^(.+?)\s+\$?(\d+)$',                      # e.g., "Milk $2"
+            r'^(.+?)\s+(\d+)$',                         # e.g., "Bread 3"
+        ]
 
     for line in lines:
         if len(line.strip()) < 3:
