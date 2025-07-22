@@ -9,10 +9,11 @@ from pdf2image import convert_from_bytes
 import base64
 from datetime import datetime
 import numpy as np
+from collections import defaultdict
 
 # Set page config
 st.set_page_config(
-    page_title="Receipt Parser",
+    page_title="Receipt Parser v3.0",
     page_icon="🧾",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -51,385 +52,295 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def preprocess_image(image):
-    """Preprocess image for better OCR results"""
-    # Convert to numpy array
-    img_array = np.array(image)
+class ReceiptParser:
+    """Enhanced receipt parser with improved accuracy and efficiency"""
     
-    # Convert to grayscale if needed
-    if len(img_array.shape) == 3:
-        # Convert to grayscale using weighted average
-        gray = np.dot(img_array[...,:3], [0.2989, 0.5870, 0.1140])
-        img_array = gray.astype(np.uint8)
-    
-    # Create PIL image from processed array
-    processed_image = Image.fromarray(img_array)
-    
-    return processed_image
-
-def extract_text_from_pdf(pdf_file):
-    """Extract text from PDF using both text extraction and OCR"""
-    try:
-        # First try to extract text directly
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text.strip():
-                text += page_text + "\n"
+    def __init__(self):
+        # Compiled regex patterns for efficiency
+        self.price_patterns = [
+            re.compile(r'(\d{1,3}(?:,\d{3})*\.\d{2})\s*[xX]\s*\d*\s*$'),  # Price with quantity
+            re.compile(r'\$\s*(\d{1,3}(?:,\d{3})*\.\d{2})(?:\s*[xX])?'),   # $ prefixed price
+            re.compile(r'(\d{1,3}(?:,\d{3})*\.\d{2})\s*$'),                # Price at line end
+            re.compile(r'(\d+\.\d{2})\s*[xX]\s*\d*\s*$'),                  # Simple price with qty
+            re.compile(r'(\d+\.\d{2})\s*$'),                               # Simple price at end
+            re.compile(r'(\d+\.\d{2})(?=\s|$)'),                          # Simple price with boundary
+        ]
         
-        # If we got good text, return it
-        if text.strip() and len(text.strip()) > 50:
-            st.success("✅ Direct text extraction successful!")
+        # Skip patterns - more precise to avoid false positives
+        self.skip_patterns = re.compile(r'|'.join([
+            # Store headers and transaction info
+            r'(?i)^(?:walmart|target|costco|kroger|safeway|supercenter|grocery|market)\b',
+            r'(?i)\b(?:st#|op#|te#|tr#|tc#|ref|aid|terminal|mgr\.?|manager)\b',
+            r'(?i)\b(?:transaction|reference|confirmation|invoice|receipt)\s*#?\b',
+            r'(?i)\b(?:store|location|address|phone)\b',
+            
+            # Dates, times, and technical codes
+            r'^\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}',  # Dates
+            r'^\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?',  # Times
+            r'^\d{3}-?\d{3}-?\d{4}$',  # Phone numbers
+            r'^\d{5,}$',  # Long number codes (UPC, etc.)
+            r'^\w{2}\s+\d+\s+\w+$',  # State + number + code patterns
+            
+            # Promotional and footer text
+            r'(?i)\b(?:survey|feedback|scan|trial|delivery|hours|thank\s*you)\b',
+            r'(?i)(?:give\s+us\s+feedback|scan\s+for|get\s+free|with\s+walmart)',
+            r'(?i)(?:low\s+prices|you\s+can\s+trust|every\s*day|supercenter)',
+            
+            # Payment and approval codes
+            r'(?i)\b(?:mcard|tend|signature|required|appr#?|approval)\b',
+            r'^\s*\d+\s+[iI]\s+\d+\s+appr',
+            r'(?i)^\s*items\s+sold\s+\d+',
+        ]))
+        
+        # Summary line patterns
+        self.summary_patterns = re.compile(r'|'.join([
+            # Totals and subtotals - more specific patterns
+            r'(?i)^\s*(?:grand\s*)?(?:sub\s*)?total\s*$',
+            r'(?i)^\s*(?:order|final|net|gross)\s+total\s*$',
+            r'(?i)^\s*(?:balance|amount|total)\s*due\s*$',
+            
+            # Tax patterns
+            r'(?i)^\s*(?:sales\s*)?tax(?:\s*\d*)?\s*$',
+            r'(?i)^\s*(?:hst|gst|pst|vat|state|city|local)\s*(?:tax)?\s*$',
+            
+            # Payment and tender
+            r'(?i)^\s*(?:change|cash|card|credit|debit|payment|tender)\s*$',
+            r'(?i)^\s*(?:visa|mastercard|amex|discover)\s*$',
+            
+            # Fees and discounts
+            r'(?i)^\s*(?:discount|coupon|savings|promo)\s*$',
+            r'(?i)^\s*(?:delivery|service|bag)\s*fee\s*$',
+            r'(?i)^\s*(?:tip|gratuity|bottle\s*deposit|crv)\s*$',
+        ]))
+    
+    def preprocess_image(self, image):
+        """Optimized image preprocessing"""
+        img_array = np.array(image)
+        
+        # Convert to grayscale using standard weights
+        if len(img_array.shape) == 3:
+            gray = np.dot(img_array[...,:3], [0.299, 0.587, 0.114])
+            img_array = gray.astype(np.uint8)
+        
+        return Image.fromarray(img_array)
+    
+    def extract_text_from_pdf(self, pdf_file):
+        """Enhanced PDF text extraction with fallback to OCR"""
+        try:
+            # Try direct text extraction first
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text = "\n".join(page.extract_text() for page in pdf_reader.pages)
+            
+            if len(text.strip()) > 50 and not text.isspace():
+                st.success("✅ Direct text extraction successful!")
+                return text
+            
+            # Fallback to OCR with progress tracking
+            st.info("📷 Using OCR for better text extraction...")
+            pdf_file.seek(0)
+            images = convert_from_bytes(pdf_file.read(), dpi=300)
+            
+            ocr_text = []
+            progress_bar = st.progress(0)
+            
+            for i, image in enumerate(images):
+                progress_bar.progress((i + 1) / len(images))
+                processed_image = self.preprocess_image(image)
+                
+                # Optimized OCR config for receipts
+                config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,()$%/-:&@ '
+                page_text = pytesseract.image_to_string(processed_image, config=config)
+                ocr_text.append(page_text)
+            
+            return "\n".join(ocr_text)
+            
+        except Exception as e:
+            st.error(f"PDF processing error: {str(e)}")
+            return ""
+    
+    def extract_text_from_image(self, image):
+        """Optimized image OCR"""
+        try:
+            processed_image = self.preprocess_image(image)
+            
+            with st.spinner("🔍 Extracting text from image..."):
+                config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,()$%/-:&@ '
+                text = pytesseract.image_to_string(processed_image, config=config)
+            
             return text
-        
-        # If direct extraction failed, use OCR
-        st.info("📷 Direct text extraction failed, using OCR...")
-        pdf_file.seek(0)  # Reset file pointer
-        images = convert_from_bytes(pdf_file.read(), dpi=300)
-        ocr_text = ""
-        
-        progress_bar = st.progress(0)
-        for i, image in enumerate(images):
-            st.write(f"Processing page {i+1}/{len(images)}...")
-            progress_bar.progress((i + 1) / len(images))
-            
-            # Preprocess image
-            processed_image = preprocess_image(image)
-            
-            # Use better OCR config
-            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,()$%/-: '
-            page_text = pytesseract.image_to_string(processed_image, config=custom_config)
-            ocr_text += page_text + "\n"
-        
-        return ocr_text
-    except Exception as e:
-        st.error(f"Error extracting text from PDF: {str(e)}")
-        return ""
-
-def extract_text_from_image(image):
-    """Extract text from image using OCR with better preprocessing"""
-    try:
-        # Preprocess image
-        processed_image = preprocess_image(image)
-        
-        with st.spinner("🔍 Extracting text from image..."):
-            # Use custom OCR configuration for better results
-            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,()$%/-: '
-            text = pytesseract.image_to_string(processed_image, config=custom_config)
-        
-        return text
-    except Exception as e:
-        st.error(f"Error extracting text from image: {str(e)}")
-        return ""
-
-def clean_text_line(line):
-    """Clean and normalize a text line"""
-    # Remove extra whitespace and normalize
-    line = ' '.join(line.split())
-    # Remove some common OCR artifacts
-    line = re.sub(r'[|\\]', '', line)
-    # Fix common OCR mistakes
-    line = line.replace('5', 'S').replace('0', 'O').replace('1', 'I')
-    return line
-
-def extract_price_from_line(line):
-    """Extract price from a line using multiple patterns - enhanced version"""
-    # More comprehensive price patterns, ordered by specificity
-    price_patterns = [
-        r'(\d{1,3}(?:,\d{3})*\.\d{2})\s*X',      # Price followed by X (quantity)
-        r'(\d{1,3}(?:,\d{3})*\.\d{2})\s*$',      # Price at end of line
-        r'\$\s*(\d{1,3}(?:,\d{3})*\.\d{2})',     # Price with dollar sign
-        r'(\d{1,3}(?:,\d{3})*\.\d{2})',          # Standard format with commas
-        r'(\d+\.\d{2})\s*X',                      # Simple price with X
-        r'(\d+\.\d{2})\s*$',                      # Simple price at end
-        r'(\d+\.\d{2})',                          # Simple price anywhere
-        r'(\d+,\d{2})',                           # European format
-    ]
+        except Exception as e:
+            st.error(f"Image OCR error: {str(e)}")
+            return ""
     
-    for pattern in price_patterns:
-        matches = re.findall(pattern, line)
-        if matches:
-            price = matches[-1]  # Take the last match
-            # Convert comma decimal to dot if needed
-            if ',' in price and '.' not in price:
-                price = price.replace(',', '.')
-            try:
-                price_float = float(price)
-                # Additional validation: price should be reasonable
-                if 0.01 <= price_float <= 999.99:
-                    return price_float
-            except ValueError:
-                continue
+    def extract_price(self, line):
+        """Enhanced price extraction with validation"""
+        for pattern in self.price_patterns:
+            match = pattern.search(line)
+            if match:
+                price_str = match.group(1)
+                try:
+                    price = float(price_str.replace(',', ''))
+                    # Reasonable price validation
+                    if 0.01 <= price <= 999.99:
+                        return price
+                except ValueError:
+                    continue
+        return None
     
-    return None
-
-def is_summary_line(line, all_items_so_far):
-    """
-    Enhanced function to detect if a line is a summary line (subtotal, total, tax, etc.)
-    Uses context from previously found items to make better decisions
-    """
-    line_lower = line.lower().strip()
+    def clean_item_name(self, line, price_str):
+        """Clean item name by removing price and artifacts"""
+        # Remove the price pattern from the line
+        cleaned = line
+        for pattern in self.price_patterns:
+            cleaned = pattern.sub('', cleaned)
+        
+        # Remove common artifacts and normalize
+        cleaned = re.sub(r'[|\\]+', ' ', cleaned)  # Remove OCR artifacts
+        cleaned = re.sub(r'\b\d{8,}\b', '', cleaned)  # Remove UPC codes
+        cleaned = re.sub(r'\s*[xX]\s*\d*\s*$', '', cleaned)  # Remove quantity markers
+        cleaned = re.sub(r'[^\w\s\-\.&]', ' ', cleaned)  # Keep only valid chars
+        cleaned = ' '.join(cleaned.split())  # Normalize whitespace
+        
+        return cleaned.strip()
     
-    # Basic summary line patterns - more comprehensive
-    summary_patterns = [
-        # Totals and subtotals
-        r'^\s*total\s*$|^\s*subtotal\s*$|^\s*sub\s*total\s*$|^\s*sub-total\s*$',
-        r'^\s*grand\s*total\s*$|^\s*final\s*total\s*$|^\s*order\s*total\s*$',
-        r'^\s*balance\s*$|^\s*amount\s*due\s*$|^\s*total\s*due\s*$',
-        r'^\s*net\s*total\s*$|^\s*gross\s*total\s*$',
+    def is_likely_item_line(self, line, price, item_name):
+        """Enhanced item line detection"""
+        # Skip if line matches skip patterns
+        if self.skip_patterns.search(line):
+            return False
         
-        # Tax lines
-        r'^\s*tax\s*$|^\s*sales\s*tax\s*$|^\s*tax\s*\d*\s*$',
-        r'^\s*hst\s*$|^\s*gst\s*$|^\s*pst\s*$|^\s*vat\s*$',
-        r'^\s*state\s*tax\s*$|^\s*city\s*tax\s*$|^\s*local\s*tax\s*$',
+        # Skip summary lines
+        if self.summary_patterns.search(line):
+            return False
         
-        # Payment related
-        r'^\s*change\s*$|^\s*cash\s*$|^\s*card\s*$|^\s*credit\s*$|^\s*debit\s*$',
-        r'^\s*payment\s*$|^\s*tender\s*$|^\s*tendered\s*$',
-        r'^\s*visa\s*$|^\s*mastercard\s*$|^\s*amex\s*$|^\s*discover\s*$',
+        # Item name quality checks
+        if len(item_name) < 2 or item_name.isdigit():
+            return False
         
-        # Discounts and fees
-        r'^\s*discount\s*$|^\s*coupon\s*$|^\s*savings\s*$|^\s*promo\s*$',
-        r'^\s*delivery\s*fee\s*$|^\s*service\s*fee\s*$|^\s*tip\s*$',
-        r'^\s*bag\s*fee\s*$|^\s*bottle\s*deposit\s*$|^\s*crv\s*$',
+        # Skip if too many digits (likely a code)
+        if len(item_name) > 3:
+            digit_ratio = sum(c.isdigit() for c in item_name) / len(item_name)
+            if digit_ratio > 0.6:
+                return False
         
-        # Transaction details
-        r'^\s*receipt\s*$|^\s*transaction\s*$|^\s*order\s*$|^\s*invoice\s*$',
-        r'^\s*ref\s*#|^\s*reference\s*$|^\s*confirmation\s*$',
+        # Check for summary keywords in item name
+        item_lower = item_name.lower()
+        summary_keywords = ['total', 'subtotal', 'tax', 'due', 'balance', 'change', 'payment', 'cash']
+        if any(keyword in item_lower for keyword in summary_keywords):
+            return False
         
-        # Common receipt footer items
-        r'^\s*thank\s*you\s*$|^\s*have\s*a\s*nice\s*day\s*$|^\s*come\s*again\s*$',
-        r'^\s*store\s*$|^\s*cashier\s*$|^\s*register\s*$|^\s*terminal\s*$',
-        
-        # Lines that contain "total" or "subtotal" anywhere
-        r'.*total.*|.*subtotal.*|.*sub\s*total.*',
-    ]
+        return True
     
-    # Check basic patterns
-    for pattern in summary_patterns:
-        if re.search(pattern, line_lower):
-            return True
-    
-    # Additional contextual checks
-    price = extract_price_from_line(line)
-    if price and all_items_so_far:
-        # If this line's price is suspiciously close to sum of previous items
-        previous_total = sum(item['Amount'] for item in all_items_so_far)
+    def parse_receipt_text(self, text):
+        """Enhanced receipt parsing with improved accuracy"""
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        items = []
+        processed_lines = set()  # Track exact lines to prevent duplicates
         
-        # Check if this price is close to the sum of previous items (within 20%)
-        if abs(price - previous_total) / max(previous_total, 0.01) < 0.2:
-            # This might be a subtotal, but let's check the item name
-            item_name = line
-            # Remove price from item name
-            for pattern in [r'\$?\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*X?', r'\$?\s*\d+\.\d{2}\s*X?']:
-                item_name = re.sub(pattern, '', item_name)
-            item_name = item_name.strip().lower()
-            
-            # If the remaining text is very short or looks like a summary
-            if len(item_name) < 3 or any(word in item_name for word in ['total', 'subtotal', 'tax', 'due', 'balance']):
-                return True
-    
-    return False
-
-def parse_receipt_text(text):
-    """Enhanced receipt parsing with better total/subtotal detection"""
-    lines = text.strip().split('\n')
-    items = []
-    
-    # Enhanced skip patterns - more specific to avoid false positives
-    skip_patterns = [
-        # Store and transaction info
-        r'walmart|target|costco|kroger|safeway|supercenter|grocery|market',
-        r'st#|op#|te#|tr#|tc#|ref|aid|terminal|mgr\.|manager',
-        r'transaction|ref|reference|confirmation|invoice|receipt\s*#',
+        # First pass: collect all potential items with metadata
+        candidate_items = []
         
-        # Date, time, and contact info
-        r'^\d{2}/\d{2}/\d{2,4}|^\d{2}:\d{2}:\d{2}',
-        r'phone|address|mountain\s+view|ca\s+\d{5}',
-        r'^\d{3}-\d{3}-\d{4}|^\d{5}$',
-        
-        # Promotional and feedback
-        r'survey|feedback|delivery|scan|trial|free\s+delivery',
-        r'low\s+prices|you\s+can\s+trust|every\s+day',
-        r'give\s+us\s+feedback|scan\s+for|get\s+free\s+delivery',
-        r'with\s+walmart|supercenter|store\s+hours',
-        
-        # Transaction codes and technical info
-        r'mcard|tend|signature|required|no\s+signature',
-        r'appr#|ref\s+#|aid\s+a|approval',
-        r'^\s*\d+\s+i\s+\d+\s+appr',
-        r'^\s*items\s+sold\s+\d+',
-        
-        # Lines that are just numbers or codes
-        r'^\s*\d+\s*$',
-        r'^\s*[A-Z]{2}\s+\d+\s*$',
-        r'^\d{12,}$',  # UPC codes
-        
-        # Address-like patterns
-        r'^\s*\d+\s+\w+\s+dr|^\s*\d+\s+\w+\s+st|^\s*\d+\s+\w+\s+ave',
-    ]
-    
-    # Compile patterns for efficiency
-    skip_regex = re.compile('|'.join(skip_patterns), re.IGNORECASE)
-    
-    # Track processed items to handle duplicates and context
-    processed_items = []
-    
-    for i, line in enumerate(lines):
-        original_line = line
-        line = line.strip()
-        if not line or len(line) < 3:
-            continue
-        
-        # Skip obvious header/footer lines
-        if skip_regex.search(line):
-            continue
-        
-        # ENHANCED: Check if this is a summary line using context
-        if is_summary_line(line, processed_items):
-            continue
-        
-        # Skip lines that are mostly numbers (like barcodes) but longer than 8 chars
-        if re.match(r'^\d+$', line) and len(line) > 8:
-            continue
-        
-        # Skip lines that look like UPC codes (long numbers)
-        if re.match(r'^\d{12,}$', line):
-            continue
-        
-        # Look for price patterns in the line
-        price = extract_price_from_line(line)
-        if price and price > 0:
-            # Extract item name (everything before the price)
-            item_name = line
-            
-            # Remove price from item name using more specific patterns
-            price_patterns = [
-                r'\$?\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*X?',  # Standard price with optional $ and X
-                r'\$?\s*\d+\.\d{2}\s*X?',                 # Simple price with optional $ and X
-                r'\$?\s*\d+,\d{2}\s*X?',                  # European format
-                r'\d{1,3}(?:,\d{3})*\.\d{2}',             # Just the number
-                r'\d+\.\d{2}',                            # Simple number
-            ]
-            
-            for pattern in price_patterns:
-                item_name = re.sub(pattern, '', item_name)
-            
-            # Remove quantity indicators more aggressively
-            item_name = re.sub(r'\s+X\s*$', '', item_name, flags=re.IGNORECASE)
-            item_name = re.sub(r'\s+x\s*$', '', item_name, flags=re.IGNORECASE)
-            
-            # Remove UPC codes and long numbers from item name
-            item_name = re.sub(r'\b\d{10,}\b', '', item_name)
-            
-            # Remove common OCR artifacts and clean up
-            item_name = re.sub(r'[|\\]', '', item_name)  # Remove pipes and backslashes
-            item_name = item_name.strip()
-            item_name = re.sub(r'\s+', ' ', item_name)  # Multiple spaces to single
-            
-            # More gentle cleaning - preserve letters, numbers, and basic punctuation
-            item_name = re.sub(r'[^\w\s\-\.]', ' ', item_name)
-            item_name = ' '.join(item_name.split())  # Final cleanup
-            
-            # Skip if item name is too short or looks like a code
-            if len(item_name) < 2:
+        for i, line in enumerate(lines):
+            if line in processed_lines or len(line) < 3:
                 continue
             
-            # Skip if item name is just numbers
-            if item_name.isdigit():
+            price = self.extract_price(line)
+            if not price:
                 continue
             
-            # Skip if item name contains too many digits (likely a code)
-            if len(item_name) > 0 and sum(c.isdigit() for c in item_name) / len(item_name) > 0.7:
+            item_name = self.clean_item_name(line, str(price))
+            
+            if not self.is_likely_item_line(line, price, item_name):
                 continue
             
-            # ENHANCED: Additional check for summary-like item names
-            item_name_lower = item_name.lower()
-            summary_words = ['total', 'subtotal', 'tax', 'due', 'balance', 'change', 'payment', 'cash', 'card']
-            if any(word in item_name_lower for word in summary_words):
+            candidate_items.append({
+                'line_index': i,
+                'original_line': line,
+                'item_name': item_name,
+                'price': price,
+                'context_lines': lines[max(0, i-2):i+3]  # Context for validation
+            })
+        
+        # Second pass: validate candidates and remove false positives
+        running_total = 0
+        
+        for candidate in candidate_items:
+            # Skip if this looks like a running total
+            if abs(candidate['price'] - running_total) < 0.05 and len(candidate['item_name']) < 8:
                 continue
             
-            # Check if price is reasonable (between $0.01 and $999.99)
-            if 0.01 <= price <= 999.99:
-                # ENHANCED: Final contextual check - is this price suspiciously similar to running total?
-                # Only apply this check if the item name looks like it could be a summary
-                if processed_items and len(item_name) < 10:  # Only check short names that might be summaries
-                    running_total = sum(item['Amount'] for item in processed_items)
-                    # If this price is very close to the running total, it might be a subtotal
-                    if abs(price - running_total) < 0.05:  # Within 5 cents
-                        continue
-                
-                # Create item entry
-                item_entry = {
-                    'Item': item_name,
-                    'Amount': price,
-                    'Date Processed': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'Original Line': original_line.strip()
-                }
-                
-                # Check for exact duplicates (same item name, price, AND original line)
-                # This prevents processing the same line twice but allows legitimate multiples
-                is_duplicate = False
-                for existing_item in processed_items:
-                    if existing_item['Original Line'] == original_line.strip():
-                        is_duplicate = True
-                        break
-                
-                # Only add if not processing the same line twice
-                if not is_duplicate:
-                    processed_items.append(item_entry)
-                    items.append(item_entry)
-    
-    return items
+            # Check if item name is too generic/summary-like when compared to price
+            if candidate['price'] > 50 and len(candidate['item_name']) < 4:
+                # High price with very short name - might be a subtotal
+                continue
+            
+            # Final validation: check context for summary indicators
+            context_text = ' '.join(candidate['context_lines']).lower()
+            if 'subtotal' in context_text or 'total' in context_text:
+                # Be more conservative if we're near total-like text
+                if len(candidate['item_name']) < 6:
+                    continue
+            
+            # Add to final items
+            item = {
+                'Item': candidate['item_name'],
+                'Amount': candidate['price'],
+                'Date Processed': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Original Line': candidate['original_line']
+            }
+            
+            items.append(item)
+            processed_lines.add(candidate['original_line'])
+            running_total += candidate['price']
+        
+        return items
 
 def create_download_link(df, filename):
     """Create a download link for the dataframe"""
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
-    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
-    return href
+    return f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV File</a>'
 
 def main():
-    # Header
-    st.markdown('<h1 class="main-header">🧾 Receipt Parser</h1>', unsafe_allow_html=True)
+    # Initialize parser
+    parser = ReceiptParser()
     
-    # Sidebar for instructions
+    # Header
+    st.markdown('<h1 class="main-header">🧾 Receipt Parser v3.0</h1>', unsafe_allow_html=True)
+    
+    # Sidebar
     with st.sidebar:
         st.markdown("## 📋 Instructions")
         st.markdown("""
         1. **Upload** your receipt (PDF or image)
-        2. **Review** the extracted text
+        2. **Review** the extracted items
         3. **Download** the parsed data as CSV
         4. **Import** to Google Sheets or Excel
         """)
         
         st.markdown("## 🔧 Supported Formats")
-        st.markdown("""
-        - **Images**: JPG, PNG, GIF, BMP, TIFF
-        - **PDFs**: Single or multi-page
-        """)
+        st.markdown("- **Images**: JPG, PNG, GIF, BMP, TIFF\n- **PDFs**: Single or multi-page")
         
         st.markdown("## 💡 Tips for Better Results")
         st.markdown("""
-        - Use good lighting when taking photos
-        - Keep the receipt flat and straight
-        - Ensure text is clearly visible
-        - Avoid shadows and reflections
+        - Use good lighting and avoid shadows
+        - Keep receipts flat and straight
         - Higher resolution images work better
+        - Ensure text is clearly visible
         """)
         
-        st.markdown("## ⚙️ OCR Settings")
+        st.markdown("## ⚙️ v3.0 Improvements")
         st.markdown("""
-        **Enhanced v2.0 includes:**
-        - Better subtotal/total detection
-        - Contextual summary line filtering
-        - Improved price validation
-        - Enhanced duplicate handling
+        **Enhanced accuracy through:**
+        - Compiled regex patterns for speed
+        - Two-pass item validation
+        - Contextual analysis
+        - Better price pattern detection
+        - Improved item name cleaning
         - Running total validation
         """)
     
-    # Main content area
+    # Main content
     col1, col2 = st.columns([1, 1])
     
     with col1:
@@ -441,127 +352,86 @@ def main():
         )
     
     if uploaded_file is not None:
-        # Display file info
-        st.markdown(f"**File:** {uploaded_file.name}")
-        st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
+        st.markdown(f"**File:** {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
         
-        # Process the file
         file_type = uploaded_file.name.lower().split('.')[-1]
         
         with col2:
             st.markdown("## 👀 Preview")
             
             if file_type == 'pdf':
-                st.markdown("📄 PDF uploaded - processing...")
-                extracted_text = extract_text_from_pdf(uploaded_file)
-                
-                # Show PDF preview if possible
+                extracted_text = parser.extract_text_from_pdf(uploaded_file)
+                # Show PDF preview
                 try:
                     uploaded_file.seek(0)
                     images = convert_from_bytes(uploaded_file.read(), dpi=150)
                     if images:
                         st.image(images[0], caption="First page preview", use_column_width=True)
-                except Exception as e:
-                    st.warning("Could not create PDF preview")
-                    
-            elif file_type in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff']:
-                st.markdown("🖼️ Image uploaded - processing...")
+                except:
+                    st.info("PDF uploaded successfully")
+            else:
                 image = Image.open(uploaded_file)
                 st.image(image, caption="Uploaded image", use_column_width=True)
-                extracted_text = extract_text_from_image(image)
-            
-            else:
-                st.error("❌ Unsupported file type")
-                return
+                extracted_text = parser.extract_text_from_image(image)
         
-        # Show extracted text
         if extracted_text:
+            # Show extracted text in expander
             st.markdown("## 📝 Extracted Text")
-            with st.expander("Click to view extracted text", expanded=False):
-                st.text_area(
-                    "Extracted text:",
-                    value=extracted_text,
-                    height=200,
-                    help="This is the raw text extracted from your receipt"
-                )
+            with st.expander("View extracted text", expanded=False):
+                st.text_area("Raw text:", value=extracted_text, height=200, disabled=True)
             
             # Parse items
             with st.spinner("🔍 Parsing receipt items..."):
-                items = parse_receipt_text(extracted_text)
+                items = parser.parse_receipt_text(extracted_text)
             
             if items:
-                # Create dataframe and remove debug column for display
                 df = pd.DataFrame(items)
                 display_df = df.drop('Original Line', axis=1)
                 
                 st.markdown("## 📊 Parsed Items")
                 st.success(f"✅ Found {len(items)} items!")
                 
-                # Display the dataframe
+                # Display results
                 st.dataframe(display_df, use_container_width=True)
                 
-                # Show debugging info
-                with st.expander("🔍 Debug Information", expanded=False):
-                    st.markdown("**Items with original lines:**")
-                    for item in items:
-                        st.markdown(f"**{item['Item']}** (${item['Amount']:.2f})")
-                        st.markdown(f"*Original line:* `{item['Original Line']}`")
-                        st.markdown("---")
-                
-                # Summary statistics
+                # Summary metrics
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Total Items", len(display_df))
+                    st.metric("Total Items", len(items))
                 with col2:
-                    st.metric("Total Amount", f"${display_df['Amount'].sum():.2f}")
+                    st.metric("Total Amount", f"${sum(item['Amount'] for item in items):.2f}")
                 with col3:
-                    st.metric("Average Price", f"${display_df['Amount'].mean():.2f}")
+                    st.metric("Average Price", f"${np.mean([item['Amount'] for item in items]):.2f}")
+                
+                # Debug information
+                with st.expander("🔍 Debug Information", expanded=False):
+                    for item in items:
+                        st.markdown(f"**{item['Item']}** - ${item['Amount']:.2f}")
+                        st.code(f"Original: {item['Original Line']}")
                 
                 # Download options
                 st.markdown("## 💾 Download Options")
-                
-                # Generate filename
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 filename = f"receipt_items_{timestamp}.csv"
                 
-                # Create download link
                 st.markdown(create_download_link(display_df, filename), unsafe_allow_html=True)
                 
                 # Google Sheets format
-                st.markdown("### 📋 Copy to Google Sheets")
-                st.info("Copy the data below and paste it directly into Google Sheets:")
-                
-                # Create tab-separated format for Google Sheets
+                st.markdown("### 📋 Google Sheets Format")
                 sheets_data = display_df.to_csv(sep='\t', index=False)
-                st.text_area(
-                    "Google Sheets format (tab-separated):",
-                    value=sheets_data,
-                    height=150,
-                    help="Select all and copy, then paste into Google Sheets"
-                )
-                
+                st.text_area("Copy and paste into Google Sheets:", value=sheets_data, height=150)
             else:
-                st.warning("❌ No items found in the receipt")
-                st.markdown("### 🔍 Debugging Information")
-                st.markdown("**Possible reasons:**")
-                st.markdown("- The image quality might be too low")
-                st.markdown("- The receipt format is not recognized")
-                st.markdown("- The text extraction didn't work properly")
-                st.markdown("- Try taking a clearer photo with better lighting")
-                
-                st.markdown("**Raw extracted text:**")
-                st.text_area("", value=extracted_text, height=300)
+                st.warning("❌ No items found")
+                st.markdown("### Troubleshooting")
+                st.markdown("- Check image quality and lighting\n- Ensure text is clearly visible\n- Try a different file format")
+                with st.expander("View raw text for debugging"):
+                    st.text_area("", value=extracted_text, height=300, disabled=True)
         else:
-            st.error("❌ Could not extract text from the file")
-            st.markdown("**Troubleshooting tips:**")
-            st.markdown("- Make sure the image is clear and readable")
-            st.markdown("- Try a different image format")
-            st.markdown("- Ensure the receipt is well-lit in the photo")
+            st.error("❌ Could not extract text from file")
     
     # Footer
     st.markdown("---")
-    st.markdown("**Made with ❤️ for easy receipt processing**")
-    st.markdown("*Enhanced v2.0 with better total/subtotal filtering*")
+    st.markdown("**Receipt Parser v3.0** - Enhanced accuracy and performance")
 
 if __name__ == "__main__":
     main()
