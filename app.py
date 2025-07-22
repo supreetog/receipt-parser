@@ -5,9 +5,16 @@ import re
 from datetime import datetime
 import pandas as pd
 import io
-import fitz  # PyMuPDF
 import tempfile
 import os
+
+# Try to import PyMuPDF, fall back gracefully if not available
+try:
+    import fitz  # PyMuPDF
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
+    st.warning("⚠️ PyMuPDF not found. PDF support disabled. Install with: pip install PyMuPDF")
 
 # Configure page
 st.set_page_config(
@@ -40,6 +47,10 @@ class ReceiptParser:
     
     def extract_text_from_pdf(self, pdf_bytes):
         """Extract text from PDF file"""
+        if not PDF_SUPPORT:
+            st.error("PDF support not available. Please install PyMuPDF: pip install PyMuPDF")
+            return "", None
+            
         try:
             # Create a temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -227,10 +238,14 @@ def main():
     parser = ReceiptParser()
     
     # File uploader
+    supported_types = ['png', 'jpg', 'jpeg']
+    if PDF_SUPPORT:
+        supported_types.append('pdf')
+    
     uploaded_file = st.file_uploader(
-        "Choose a receipt image or PDF", 
-        type=['png', 'jpg', 'jpeg', 'pdf'],
-        help="Upload a clear image of your receipt or a PDF file"
+        "Choose a receipt image" + (" or PDF" if PDF_SUPPORT else ""), 
+        type=supported_types,
+        help="Upload a clear image of your receipt" + (" or a PDF file" if PDF_SUPPORT else "")
     )
     
     if uploaded_file is not None:
