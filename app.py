@@ -5,6 +5,9 @@ import re
 from datetime import datetime
 import pandas as pd
 import io
+import fitz  # PyMuPDF
+import tempfile
+import os
 
 # Configure page
 st.set_page_config(
@@ -34,6 +37,52 @@ class ReceiptParser:
         except Exception as e:
             st.error(f"Error extracting text: {str(e)}")
             return ""
+    
+    def extract_text_from_pdf(self, pdf_bytes):
+        """Extract text from PDF file"""
+        try:
+            # Create a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                tmp_file.write(pdf_bytes)
+                tmp_file_path = tmp_file.name
+            
+            try:
+                # Open PDF with PyMuPDF
+                doc = fitz.open(tmp_file_path)
+                full_text = ""
+                images = []
+                
+                # Process each page
+                for page_num in range(len(doc)):
+                    page = doc[page_num]
+                    
+                    # First try to extract text directly (for searchable PDFs)
+                    page_text = page.get_text()
+                    if page_text.strip():
+                        full_text += page_text + "\n"
+                    else:
+                        # If no text found, convert page to image and OCR
+                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
+                        img_data = pix.tobytes("png")
+                        img = Image.open(io.BytesIO(img_data))
+                        images.append(img)
+                        
+                        # OCR the image
+                        ocr_text = self.extract_text_from_image(img)
+                        full_text += ocr_text + "\n"
+                
+                doc.close()
+                
+                return full_text, images if images else None
+            
+            finally:
+                # Clean up temporary file
+                if os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+                    
+        except Exception as e:
+            st.error(f"Error processing PDF: {str(e)}")
+            return "", None
     
     def parse_receipt(self, text):
         """Parse receipt text and extract structured data"""
@@ -179,26 +228,51 @@ def main():
     
     # File uploader
     uploaded_file = st.file_uploader(
-        "Choose a receipt image", 
-        type=['png', 'jpg', 'jpeg'],
-        help="Upload a clear image of your receipt"
+        "Choose a receipt image or PDF", 
+        type=['png', 'jpg', 'jpeg', 'pdf'],
+        help="Upload a clear image of your receipt or a PDF file"
     )
     
     if uploaded_file is not None:
-        # Display the image
+        # Check file type
+        file_type = uploaded_file.type
+        is_pdf = file_type == "application/pdf"
+        
+        # Display the file
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            st.subheader("Original Receipt")
-            image = Image.open(uploaded_file)
-            st.image(image, use_column_width=True)
+            if is_pdf:
+                st.subheader("PDF Receipt")
+                st.write(f"📄 **File:** {uploaded_file.name}")
+                st.write(f"📊 **Size:** {len(uploaded_file.getvalue())} bytes")
+            else:
+                st.subheader("Original Receipt")
+                image = Image.open(uploaded_file)
+                st.image(image, use_column_width=True)
         
         with col2:
             st.subheader("Parsed Data")
             
-            # Process the image
+            # Process the file
             with st.spinner("Processing receipt..."):
-                text = parser.extract_text_from_image(image)
+                text = ""
+                pdf_images = None
+                
+                if is_pdf:
+                    # Process PDF
+                    pdf_bytes = uploaded_file.getvalue()
+                    text, pdf_images = parser.extract_text_from_pdf(pdf_bytes)
+                    
+                    # Show PDF pages as images if OCR was used
+                    if pdf_images:
+                        st.write("**PDF Pages (converted to images for OCR):**")
+                        for i, img in enumerate(pdf_images):
+                            with st.expander(f"Page {i+1}"):
+                                st.image(img, use_column_width=True)
+                else:
+                    # Process image
+                    text = parser.extract_text_from_image(image)
                 
                 if text:
                     receipt_data = parser.parse_receipt(text)
@@ -262,30 +336,36 @@ def main():
                             )
                     
                     else:
-                        st.warning("No items were detected in the receipt. Try uploading a clearer image.")
+                        st.warning("No items were detected in the receipt. Try uploading a clearer image or PDF.")
                     
                     # Raw text for debugging
-                    if st.checkbox("Show raw OCR text"):
+                    if st.checkbox("Show raw extracted text"):
                         st.subheader("Raw Extracted Text")
-                        st.text_area("OCR Output:", value=text, height=200)
+                        st.text_area("Extracted Text:", value=text, height=200)
                 else:
-                    st.error("Could not extract text from the image. Please try a clearer image.")
+                    st.error("Could not extract text from the file. Please try a clearer image or a different PDF.")
     
     # Instructions
     st.sidebar.markdown("""
     ## 📝 Instructions
     
-    1. **Upload** a clear image of your receipt
+    1. **Upload** a clear image or PDF of your receipt
     2. **Review** the parsed data for accuracy
     3. **Copy** the tab-separated text
     4. **Paste** directly into Google Sheets
     
     ## 💡 Tips for Best Results
     
+    **For Images:**
     - Use good lighting when photographing receipts
     - Ensure the receipt is flat and not crumpled
     - Make sure all text is clearly visible
     - Crop the image to focus on the receipt
+    
+    **For PDFs:**
+    - Digital receipts work best (e.g., email receipts)
+    - Scanned PDFs are also supported
+    - Multi-page PDFs are handled automatically
     
     ## 📊 Google Sheets Setup
     
@@ -297,6 +377,11 @@ def main():
     - Description
     
     Then paste the copied text into a new row.
+    
+    ## 🔧 Supported Formats
+    
+    - **Images:** PNG, JPG, JPEG
+    - **PDFs:** Digital and scanned receipts
     """)
 
 if __name__ == "__main__":
