@@ -161,7 +161,7 @@ class ReceiptParser:
         return datetime.now().strftime("%m/%d/%Y")
     
         def extract_items(self, lines):
-        """Extract individual items from receipt (excluding totals, tax, and non-item lines)"""
+            """Extract individual items from receipt (excluding totals, tax, and non-item lines)"""
         items = []
 
         # Expanded skip keywords (non-item identifiers)
