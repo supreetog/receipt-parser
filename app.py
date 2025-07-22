@@ -186,50 +186,59 @@ class ReceiptParser:
         
         return "Not found"
     
-    def extract_items(self, lines):
-        """Extract individual items from receipt"""
-        items = []
-        
-        # Patterns for item lines (item name followed by price)
-        item_patterns = [
-            r'^(.+?)\s+\$?(\d+\.?\d*)$',
-            r'^(.+?)\s+(\d+\.?\d*)\s*$',
-        ]
-        
-        for line in lines:
-            # Skip lines that are too short or clearly not items
-            if len(line) < 3:
-                continue
+   def extract_items(self, lines):
+    """Extract individual items from receipt (excluding totals, tax, etc.)"""
+    items = []
+    
+    # Expanded skip keywords
+    skip_terms = [
+        'total', 'subtotal', 'tax', 'change', 'cash', 'credit', 'debit',
+        'receipt', 'thank', 'visit', 'store', 'phone', 'address',
+        'balance', 'tender', 'due', 'payment', 'discount', 'card', 'visa', 'mastercard'
+    ]
+
+    # Item patterns: text + price at the end
+    item_patterns = [
+        r'^(.+?)\s+\$?(\d+\.\d{2})$',               # e.g., "Apple $1.99"
+        r'^(.+?)\s+(\d+\.\d{2})$',                  # e.g., "Banana 0.99"
+        r'^(.+?)\s+\$?(\d+)$',                      # e.g., "Milk $2"
+        r'^(.+?)\s+(\d+)$',                         # e.g., "Bread 3"
+    ]
+
+    for line in lines:
+        if len(line.strip()) < 3:
+            continue
+
+        line_lower = line.lower()
+
+        # Skip lines with any skip terms
+        if any(term in line_lower for term in skip_terms):
+            continue
+
+        # Try matching against item patterns
+        for pattern in item_patterns:
+            match = re.match(pattern, line.strip())
+            if match:
+                item_name = match.group(1).strip()
+                price = match.group(2).strip()
                 
-            line_lower = line.lower()
-            
-            # Skip common non-item lines
-            skip_terms = ['total', 'subtotal', 'tax', 'change', 'cash', 'credit', 'debit', 
-                         'receipt', 'thank', 'visit', 'store', 'phone', 'address']
-            
-            if any(term in line_lower for term in skip_terms):
-                continue
-            
-            # Try to match item patterns
-            for pattern in item_patterns:
-                match = re.search(pattern, line.strip())
-                if match:
-                    item_name = match.group(1).strip()
-                    price = match.group(2).strip()
-                    
-                    # Validate price
-                    try:
-                        float_price = float(price)
-                        if 0.01 <= float_price <= 1000:  # Reasonable item price range
-                            items.append({
-                                'name': item_name,
-                                'price': f"${price}"
-                            })
-                            break
-                    except ValueError:
-                        continue
-        
-        return items[:20]  # Limit to 20 items to avoid clutter
+                # Filter out cases where the item name includes skip words
+                if any(term in item_name.lower() for term in skip_terms):
+                    continue
+
+                try:
+                    float_price = float(price)
+                    if 0.01 <= float_price <= 1000:  # Validate price
+                        items.append({
+                            'name': item_name,
+                            'price': f"${float_price:.2f}"
+                        })
+                        break  # Found a match; skip other patterns
+                except ValueError:
+                    continue
+
+    return items[:20]  # Limit to 20 items to avoid clutter
+
 
 def main():
     st.title("🧾 Receipt Parser")
