@@ -186,7 +186,7 @@ class ReceiptParser:
         
         return "Not found"
 
-        def extract_items(self, lines):
+    def extract_items(self, lines):
         """Extract individual items from receipt (excluding totals, tax, etc.)"""
         items = []
 
