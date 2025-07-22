@@ -161,84 +161,61 @@ class ReceiptParser:
         return datetime.now().strftime("%m/%d/%Y")
     
     def extract_total(self, lines):
-        """Extract total amount from receipt"""
-        total_patterns = [
-            r'total[:\s]*\$?(\d+\.?\d*)',
-            r'amount[:\s]*\$?(\d+\.?\d*)',
-            r'balance[:\s]*\$?(\d+\.?\d*)',
-            r'\$(\d+\.\d{2})\s*$'
-        ]
-        
-        # Look for total in reverse order (usually at bottom)
-        for line in reversed(lines):
-            line_lower = line.lower()
-            for pattern in total_patterns:
-                match = re.search(pattern, line_lower)
-                if match:
-                    amount = match.group(1)
-                    try:
-                        # Validate it's a reasonable amount
-                        float_amount = float(amount)
-                        if 0.01 <= float_amount <= 10000:  # Reasonable range
-                            return f"${amount}"
-                    except ValueError:
-                        continue
-        
-        return "Not found"
-
-    def extract_items(self, lines):
-        """Extract individual items from receipt (excluding totals, tax, etc.)"""
+       """Extract individual items from receipt (excluding totals, tax, and non-item lines)"""
         items = []
 
-        # Expanded skip keywords
+        # Expanded skip keywords (non-item identifiers)
         skip_terms = [
             'total', 'subtotal', 'tax', 'change', 'cash', 'credit', 'debit',
             'receipt', 'thank', 'visit', 'store', 'phone', 'address',
-            'balance', 'tender', 'due', 'payment', 'discount', 'card', 'visa', 'mastercard'
+            'balance', 'tender', 'due', 'payment', 'discount', 'card',
+            'visa', 'mastercard', 'items sold', 'quantity', 'qty', 'amount', 'invoice'
         ]
 
-        # Item patterns: text + price at the end
+        # Regular expression patterns to match item lines (item + price)
         item_patterns = [
-            r'^(.+?)\s+\$?(\d+\.\d{2})$',               # e.g., "Apple $1.99"
-            r'^(.+?)\s+(\d+\.\d{2})$',                  # e.g., "Banana 0.99"
-            r'^(.+?)\s+\$?(\d+)$',                      # e.g., "Milk $2"
-            r'^(.+?)\s+(\d+)$',                         # e.g., "Bread 3"
+            r'^(.+?)\s+\$?(\d+\.\d{2})\s*$',         # e.g. Apple $1.99
+            r'^(.+?)\s+(\d+\.\d{2})\s*$',            # e.g. Banana 0.99
+            r'^(.+?)\s+\$?(\d+)\s*$',                # e.g. Milk $2
+            r'^(.+?)\s+(\d+)\s*$'                    # e.g. Bread 3
         ]
 
         for line in lines:
-            if len(line.strip()) < 3:
+            clean_line = line.strip()
+
+            # Skip very short lines
+            if len(clean_line) < 3:
                 continue
 
-            line_lower = line.lower()
+            # Normalize line for checking skip terms
+            line_lower = clean_line.lower()
 
-            # Skip lines with any skip terms
             if any(term in line_lower for term in skip_terms):
                 continue
 
-            # Try matching against item patterns
+            # Try matching each pattern
             for pattern in item_patterns:
-                match = re.match(pattern, line.strip())
+                match = re.match(pattern, clean_line)
                 if match:
                     item_name = match.group(1).strip()
-                    price = match.group(2).strip()
+                    price_str = match.group(2).strip()
 
-                    # Filter out cases where the item name includes skip words
+                    # Skip if the item name contains keywords we don’t want
                     if any(term in item_name.lower() for term in skip_terms):
-                        continue
+                        break
 
                     try:
-                        float_price = float(price)
-                        if 0.01 <= float_price <= 1000:  # Validate price
+                        price = float(price_str)
+                        if 0.01 <= price <= 1000:
                             items.append({
                                 'name': item_name,
-                                'price': f"${float_price:.2f}"
+                                'price': f"${price:.2f}"
                             })
-                            break  # Found a match; skip other patterns
+                            break
                     except ValueError:
                         continue
 
-        return items[:20]  # Limit to 20 items to avoid clutter
-
+        return items[:50]  # Raise limit if you want more than 20
 
 
 def main():
