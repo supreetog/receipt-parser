@@ -78,7 +78,7 @@ class ReceiptParser:
                 continue
             
             # Skip lines that are just numbers or codes
-            if re.match(r'^\d+
+            #if re.match(r'^\d+
 
 def main():
     st.title("🧾 Receipt Parser")
