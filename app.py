@@ -1,6 +1,8 @@
 import streamlit as st
 import tempfile
 import os
+import re
+import pandas as pd
 
 # Try to import PyMuPDF for PDF support
 try:
@@ -43,141 +45,83 @@ class ReceiptParser:
         except Exception as e:
             st.error(f"Error processing PDF: {str(e)}")
             return ""
-    
+
     def extract_items(self, text):
-        """Extract items from Walmart receipt text"""
+        """Specialized extractor for Walmart receipts"""
         lines = text.strip().split('\n')
-        lines = [line.strip() for line in lines if line.strip()]
         items = []
-        
-        # Skip terms for non-item lines
-        skip_terms = [
-            'subtotal', 'total', 'tax', 'change', 'cash', 'credit', 'debit', 
-            'visa', 'mastercard', 'thank you', 'receipt', 'store'
-        ]
-        
-        # Show first 20 lines for debugging
+
+        # Debug: show first 20 lines
         st.write("**First 20 lines of text:**")
         for i, line in enumerate(lines[:20]):
             st.text(f"{i+1:2d}: {line}")
-        
+
+        skip_terms = [
+            'subtotal', 'total', 'tax', 'change', 'cash', 'credit', 'debit', 
+            'visa', 'mastercard', 'thank', 'receipt', 'store', 'balance', 'amount', 'payment'
+        ]
+
+        # Pattern: "Item Name ....... 2.98"
+        pattern = re.compile(r'(.+?)\s+([\d]+\.\d{2})$')
+
         for line in lines:
-            clean_line = line.strip()
-            
-            # Skip very short lines
-            if len(clean_line) < 3:
+            line = line.strip()
+            if not line or len(line) < 4:
                 continue
-            
-            line_lower = clean_line.lower()
-            
-            # Skip obvious non-item lines
-            should_skip = False
-            for term in skip_terms:
-                if term in line_lower:
-                    should_skip = True
-                    break
-            
-            if should_skip:
+
+            line_lower = line.lower()
+            if any(term in line_lower for term in skip_terms):
                 continue
-            
-            # Skip lines that are just numbers
-            if clean_line.isdigit():
-                continue
-                
-            # Skip lines with just special characters
-            special_only = True
-            for char in clean_line:
-                if char not in ' *-=':
-                    special_only = False
-                    break
-            
-            if special_only:
-                continue
-            
-            # Look for lines with dollar signs and decimal points (prices)
-            if '$' in clean_line and '.' in clean_line:
-                # Find the last dollar sign
-                dollar_pos = clean_line.rfind('$')
-                if dollar_pos >= 0:
-                    # Get everything after the dollar sign
-                    after_dollar = clean_line[dollar_pos + 1:].strip()
-                    
-                    # Split by spaces to get the first part (should be price)
-                    price_parts = after_dollar.split()
-                    if price_parts:
-                        potential_price = price_parts[0]
-                        
-                        # Check if it looks like a price (has decimal point)
-                        if '.' in potential_price:
-                            try:
-                                price = float(potential_price)
-                                if 0.01 <= price <= 500:
-                                    # Extract item name (everything before the last $)
-                                    item_name = clean_line[:dollar_pos].strip()
-                                    
-                                    # Clean up item name - remove long sequences of numbers
-                                    words = item_name.split()
-                                    cleaned_words = []
-                                    for word in words:
-                                        # Skip words that are all digits and longer than 8 chars (UPC codes)
-                                        if not (word.isdigit() and len(word) > 8):
-                                            cleaned_words.append(word)
-                                    
-                                    item_name = ' '.join(cleaned_words)
-                                    item_name = item_name.replace('*', '').strip()
-                                    
-                                    # Skip if item name is too short
-                                    if len(item_name) > 2 and not item_name.isdigit():
-                                        # Skip if item name contains skip terms
-                                        name_has_skip_term = False
-                                        for term in skip_terms:
-                                            if term in item_name.lower():
-                                                name_has_skip_term = True
-                                                break
-                                        
-                                        if not name_has_skip_term:
-                                            items.append({
-                                                'name': item_name,
-                                                'price': f"${price:.2f}"
-                                            })
-                            except ValueError:
-                                continue
-        
+
+            match = pattern.search(line)
+            if match:
+                name = match.group(1).strip()
+                price_str = match.group(2).strip()
+
+                # Clean name
+                name = re.sub(r'\d{8,}', '', name).strip()  # Remove long digit strings (UPC)
+                name = re.sub(r'[^A-Za-z0-9\s\-\.,]', '', name)
+
+                try:
+                    price = float(price_str)
+                    if 0.01 <= price <= 500 and len(name) > 2:
+                        items.append({'name': name, 'price': f"${price:.2f}"})
+                except:
+                    continue
+
         return items
 
 def main():
-    st.title("🧾 Receipt Parser")
-    
+    st.title("🧾 Walmart Receipt Parser")
+
     parser = ReceiptParser()
-    
-    uploaded_file = st.file_uploader("Choose a receipt PDF", type=['pdf'])
-    
+    uploaded_file = st.file_uploader("Upload a Walmart receipt (PDF)", type=['pdf'])
+
     if uploaded_file is not None:
         with st.spinner("Processing receipt..."):
             pdf_bytes = uploaded_file.getvalue()
             text = parser.extract_text_from_pdf(pdf_bytes)
-            
+
             if text:
                 items = parser.extract_items(text)
-                
+
                 if items:
-                    st.subheader(f"Found {len(items)} Items")
-                    import pandas as pd
+                    st.subheader(f"✅ Found {len(items)} items")
                     df_items = pd.DataFrame(items)
                     st.dataframe(df_items, use_container_width=True)
-                    
+
                     # Tab-separated format for Google Sheets
-                    st.subheader("Copy for Google Sheets")
+                    st.subheader("📋 Copy this into Google Sheets:")
                     tab_separated = '\n'.join([f"{item['name']}\t{item['price']}" for item in items])
-                    st.text_area("Copy this:", value=tab_separated, height=200)
+                    st.text_area("Tab-separated list:", value=tab_separated, height=200)
+
                 else:
-                    st.warning("No items found.")
-                
-                # Show raw text for debugging
-                if st.checkbox("Show extracted text"):
-                    st.text_area("Raw text:", value=text, height=300)
+                    st.warning("⚠️ No items detected. Check the receipt format or try another one.")
+
+                if st.checkbox("🔎 Show full extracted text"):
+                    st.text_area("Extracted raw text:", value=text, height=300)
             else:
-                st.error("Could not extract text from PDF.")
+                st.error("❌ Could not extract any text from the PDF.")
 
 if __name__ == "__main__":
     main()
