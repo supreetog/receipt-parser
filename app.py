@@ -16,20 +16,46 @@ st.set_page_config(page_title="Receipt Parser", page_icon="🧾", layout="wide")
 
 class ReceiptParser:
     def extract_text_from_pdf(self, pdf_bytes):
-        # [unchanged content... your PDF extraction logic]
+        """Extract text from PDF file"""
+        if not PDF_SUPPORT:
+            st.error("PDF support not available. Please install PyMuPDF: pip install PyMuPDF")
+            return ""
+            
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                tmp_file.write(pdf_bytes)
+                tmp_file_path = tmp_file.name
+            
+            try:
+                doc = fitz.open(tmp_file_path)
+                full_text = ""
+                
+                for page_num in range(len(doc)):
+                    page = doc[page_num]
+                    page_text = page.get_text()
+                    full_text += page_text + "\n"
+                
+                doc.close()
+                return full_text
+            
+            finally:
+                if os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+                    
+        except Exception as e:
+            st.error(f"Error processing PDF: {str(e)}")
+            return ""
 
     def extract_items(self, text):
         """Improved Walmart receipt parser with spacing + line grouping fixes"""
-        import re
-
         lines = text.strip().split('\n')
         lines = [line.strip() for line in lines if line.strip()]
         cleaned_lines = []
 
-        # Fix "4 . 9 7" to "4.97", and clean weird spaces
+        # Fix "4 . 9 7" to "4.97", and clean weird spacing
         for line in lines:
             fixed_line = re.sub(r'(\d)\s*\.\s*(\d)', r'\1.\2', line)  # 4 . 9 7 → 4.97
-            fixed_line = re.sub(r'\s{2,}', ' ', fixed_line)  # collapse large spaces
+            fixed_line = re.sub(r'\s{2,}', ' ', fixed_line)  # collapse multiple spaces
             fixed_line = fixed_line.strip()
             cleaned_lines.append(fixed_line)
 
@@ -66,8 +92,6 @@ class ReceiptParser:
                 previous_line = line  # Save for possible price next line
 
         return items
-
-
 
 def main():
     st.title("🧾 Walmart Receipt Parser")
