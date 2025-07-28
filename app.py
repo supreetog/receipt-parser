@@ -46,54 +46,55 @@ class ReceiptParser:
             st.error(f"Error processing PDF: {str(e)}")
             return ""
 
-    def extract_items(self, text):
-        """Improved Walmart receipt parser with spacing + line grouping fixes"""
-        import re
-          'visa', 'mastercard', 'thank', 'receipt', 'store', 'balance', 'amount', 
-                  
-        lines = text.strip().split('\n')
-        lines = [line.strip() for line in lines if line.strip()]
-        cleaned_lines = []
-    
-        # Fix "4 . 9 7" to "4.97", and clean weird spaces
-        for line in lines:
-            fixed_line = re.sub(r'(\d)\s*\.\s*(\d)', r'\1.\2', line)  # 4 . 9 7 → 4.97
-            fixed_line = re.sub(r'\s{2,}', ' ', fixed_line)  # collapse large spaces
-            fixed_line = fixed_line.strip()
-            cleaned_lines.append(fixed_line)
-    
-        # Debug: show first 20 cleaned lines
-        st.write("**First 20 cleaned lines of text:**")
-        for i, line in enumerate(cleaned_lines[:20]):
-            st.text(f"{i+1:2d}: {line}")
-    
-        skip_terms = ['subtotal', 'total', 'tax', 'change', 'cash', 'credit', 'debit', 
-                    'payment', 'approval', 'terminal', 'tc#', 'st#', 'showers dr', 'mountain view']
-    
-        items = []
-        previous_line = ""
-        pattern_price = re.compile(r'^\$?\d+\.\d{2}$')
-    
-        for i, line in enumerate(cleaned_lines):
-            lower = line.lower()
-            if any(term in lower for term in skip_terms):
-                continue
-    
-            # Is this a standalone price line?
-            if pattern_price.match(line):
-                price = float(line.replace('$', ''))
-                # Use previous line as item name
-                item_name = re.sub(r'\d{8,}', '', previous_line).strip()
-                item_name = re.sub(r'[^A-Za-z0-9\s\-\.,]', '', item_name)
-                if item_name and len(item_name) > 3:
-                    items.append({
-                        'name': item_name,
-                        'price': f"${price:.2f}"
-                    })
-            else:
-                previous_line = line  # Save for possible price next line
-    
-        return items
+   def extract_items(self, text):
+    """Improved Walmart receipt parser with spacing + line grouping fixes"""
+    import re
+
+    lines = text.strip().split('\n')
+    lines = [line.strip() for line in lines if line.strip()]
+    cleaned_lines = []
+
+    # Fix "4 . 9 7" to "4.97", and clean weird spaces
+    for line in lines:
+        fixed_line = re.sub(r'(\d)\s*\.\s*(\d)', r'\1.\2', line)  # 4 . 9 7 → 4.97
+        fixed_line = re.sub(r'\s{2,}', ' ', fixed_line)  # collapse large spaces
+        fixed_line = fixed_line.strip()
+        cleaned_lines.append(fixed_line)
+
+    # Debug: show first 20 cleaned lines
+    st.write("**First 20 cleaned lines of text:**")
+    for i, line in enumerate(cleaned_lines[:20]):
+        st.text(f"{i+1:2d}: {line}")
+
+    skip_terms = ['subtotal', 'total', 'tax', 'change', 'cash', 'credit', 'debit', 
+                  'visa', 'mastercard', 'thank', 'receipt', 'store', 'balance', 'amount', 
+                  'payment', 'approval', 'terminal', 'tc#', 'st#', 'showers dr', 'mountain view']
+
+    items = []
+    previous_line = ""
+    pattern_price = re.compile(r'^\$?\d+\.\d{2}$')
+
+    for i, line in enumerate(cleaned_lines):
+        lower = line.lower()
+        if any(term in lower for term in skip_terms):
+            continue
+
+        # Is this a standalone price line?
+        if pattern_price.match(line):
+            price = float(line.replace('$', ''))
+            # Use previous line as item name
+            item_name = re.sub(r'\d{8,}', '', previous_line).strip()
+            item_name = re.sub(r'[^A-Za-z0-9\s\-\.,]', '', item_name)
+            if item_name and len(item_name) > 3:
+                items.append({
+                    'name': item_name,
+                    'price': f"${price:.2f}"
+                })
+        else:
+            previous_line = line  # Save for possible price next line
+
+    return items
+
 
 def main():
     st.title("🧾 Walmart Receipt Parser")
