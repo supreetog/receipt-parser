@@ -184,63 +184,168 @@ class ReceiptParser:
 
         return "Not found"
     
-    
     def extract_items(self, lines):
-        """Extract individual items from receipt (excluding totals, tax, and non-item lines)"""
+        """Extract individual items from receipt - optimized for Walmart receipts"""
         items = []
-
-        # Expanded skip keywords (non-item identifiers)
+        
+        # More targeted skip terms - only clear non-item lines
         skip_terms = [
-            'total', 'subtotal', 'tax', 'change', 'cash', 'credit', 'debit',
-            'receipt', 'thank', 'visit', 'store', 'phone', 'address',
-            'balance', 'tender', 'due', 'payment', 'discount', 'card',
-            'visa', 'mastercard', 'items sold', 'quantity', 'qty', 'amount', 'invoice'
+            'subtotal', 'tax due', 'total', 'change due', 'cash tend', 'credit card',
+            'debit card', 'visa', 'mastercard', 'discover', 'receipt', 'thank you',
+            'store manager', 'phone', 'address', 'cashier', 'terminal', 'transaction',
+            'balance due', 'tender', 'payment method', 'auth code', 'ref #',
+            'items sold:', 'tc#', 'te#', 'st#', 'op#', '* * * * *', '====',
+            'walmart', 'supercenter', 'neighborhood market'
         ]
-
-        # Regular expression patterns to match item lines (item + price)
+        
+        # Skip common header patterns
+        skip_patterns = [
+            r'^\*+\s*$',  # Lines with just asterisks
+            r'^=+\s*$',   # Lines with just equals signs
+            r'^-+\s*$',   # Lines with just dashes
+            r'^\d{1,2}/\d{1,2}/\d{2,4}',  # Date lines
+            r'^\d+:\d+\s*(AM|PM)',  # Time lines
+            r'^STORE\s*#?\d+',  # Store number lines
+            r'^(ST|TE|TC|OP)#?\s*\d+',  # Transaction codes
+        ]
+        
+        # Walmart-specific item patterns
         item_patterns = [
-            r'^(.+?)\s+\$?(\d+\.\d{2})\s*$',         # e.g. Apple $1.99
-            r'^(.+?)\s+(\d+\.\d{2})\s*$',            # e.g. Banana 0.99
-            r'^(.+?)\s+\$?(\d+)\s*$',                # e.g. Milk $2
-            r'^(.+?)\s+(\d+)\s*$'                    # e.g. Bread 3
+            # Standard format: ITEM NAME 001234567890 $12.34 N
+            r'^([A-Za-z][^0-9]*?)\s+(\d{10,15})\s+\$?(\d+\.\d{2})\s*[A-Z]*\s*$',
+            # Format with quantity: ITEM NAME QTY @ $X.XX $Total N
+            r'^([A-Za-z][^@]*?)\s+\d+\s*@\s*\$?[\d.]+\s+\$?(\d+\.\d{2})\s*[A-Z]*\s*$',
+            # Simple format: ITEM NAME $XX.XX
+            r'^([A-Za-z][^$]*?)\s+\$(\d+\.\d{2})\s*[A-Z]*\s*$',
+            # Format with UPC in middle: ITEM 001234567890 NAME $XX.XX
+            r'^([A-Za-z].*?)\s+(\d{10,15})\s+([^$]*?)\s+\$(\d+\.\d{2})\s*[A-Z]*\s*$',
+            # Generic item line with price at end
+            r'^([A-Za-z][^$]*?)\s+(\d+\.\d{2})\s*[A-ZTFN]*\s*$',
         ]
-
+        
+        # Track items we've already added to avoid duplicates
+        seen_items = set()
+        
         for line in lines:
             clean_line = line.strip()
-
-            # Skip very short lines
-            if len(clean_line) < 3:
+            
+            # Skip very short lines or lines with only special characters
+            if len(clean_line) < 3 or clean_line.replace(' ', '').replace('*', '').replace('=', '').replace('-', '') == '':
                 continue
-
-            # Normalize line for checking skip terms
+            
             line_lower = clean_line.lower()
-
+            
+            # Skip lines that match our skip terms
             if any(term in line_lower for term in skip_terms):
                 continue
-
-            # Try matching each pattern
+                
+            # Skip lines that match skip patterns
+            if any(re.match(pattern, clean_line, re.IGNORECASE) for pattern in skip_patterns):
+                continue
+            
+            # Skip lines that are mostly numbers (likely UPC codes or transaction IDs)
+            if re.match(r'^\d+\s*$', clean_line):
+                continue
+                
+            # Skip lines with only special characters and spaces
+            if re.match(r'^[\s\*\-=]+$', clean_line):
+                continue
+            
+            # Try to match against item patterns
             for pattern in item_patterns:
                 match = re.match(pattern, clean_line)
                 if match:
-                    item_name = match.group(1).strip()
-                    price_str = match.group(2).strip()
-
-                    # Skip if the item name contains keywords we don’t want
+                    groups = match.groups()
+                    
+                    # Extract item name and price based on pattern
+                    if len(groups) == 3 and groups[1].isdigit() and len(groups[1]) > 10:
+                        # Pattern with UPC: name, upc, price
+                        item_name = groups[0].strip()
+                        price_str = groups[2].strip()
+                    elif len(groups) == 4:
+                        # Pattern with UPC in middle: combine first and third groups for name
+                        item_name = f"{groups[0]} {groups[2]}".strip()
+                        price_str = groups[3].strip()
+                    elif len(groups) >= 2:
+                        # Simple patterns: name, price
+                        item_name = groups[0].strip()
+                        price_str = groups[-1].strip()
+                    else:
+                        continue
+                    
+                    # Clean up item name
+                    item_name = re.sub(r'\s+', ' ', item_name)  # Normalize whitespace
+                    item_name = item_name.replace('*', '').strip()  # Remove asterisks
+                    
+                    # Skip if item name is too short or looks like a code
+                    if len(item_name) < 2 or item_name.isdigit():
+                        continue
+                    
+                    # Skip if item name contains skip terms
                     if any(term in item_name.lower() for term in skip_terms):
-                        break
-
+                        continue
+                    
                     try:
                         price = float(price_str)
-                        if 0.01 <= price <= 1000:
-                            items.append({
-                                'name': item_name,
-                                'price': f"${price:.2f}"
-                            })
-                            break
+                        if 0.01 <= price <= 1000:  # Reasonable price range
+                            # Create a key to check for duplicates
+                            item_key = (item_name.lower(), price)
+                            if item_key not in seen_items:
+                                items.append({
+                                    'name': item_name,
+                                    'price': f"${price:.2f}"
+                                })
+                                seen_items.add(item_key)
+                                break  # Found a match, don't try other patterns
+                    except (ValueError, IndexError):
+                        continue
+        
+        # If we didn't find many items, try a more lenient approach
+        if len(items) < 5:
+            items.extend(self.extract_items_lenient(lines, seen_items))
+        
+        return items[:100]  # Return up to 100 items
+    
+    def extract_items_lenient(self, lines, seen_items):
+        """More lenient item extraction for cases where strict patterns fail"""
+        items = []
+        
+        # Very simple pattern: anything that ends with a price
+        simple_pattern = r'^(.+?)\s+\$?(\d+\.\d{2})\s*[A-Z]*\s*$'
+        
+        for line in lines:
+            clean_line = line.strip()
+            
+            if len(clean_line) < 5:
+                continue
+                
+            # Skip obvious non-item lines
+            if any(skip in clean_line.lower() for skip in ['total', 'tax', 'change', 'tender', 'cash']):
+                continue
+                
+            match = re.match(simple_pattern, clean_line)
+            if match:
+                item_name = match.group(1).strip()
+                price_str = match.group(2).strip()
+                
+                # Basic cleaning
+                item_name = re.sub(r'[*=\-]+', '', item_name).strip()
+                
+                if len(item_name) > 2 and not item_name.isdigit():
+                    try:
+                        price = float(price_str)
+                        if 0.01 <= price <= 500:
+                            item_key = (item_name.lower(), price)
+                            if item_key not in seen_items:
+                                items.append({
+                                    'name': item_name,
+                                    'price': f"${price:.2f}"
+                                })
+                                seen_items.add(item_key)
                     except ValueError:
                         continue
-
-        return items[:50]  # Raise limit if you want more than 20
+        
+        return items
 
 
 def main():
