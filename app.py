@@ -78,7 +78,7 @@ class ReceiptParser:
                 continue
             
             # Skip lines that are just numbers or codes
-            #if re.match(r'^\d+
+            if re.match(r'^\d+
 
 def main():
     st.title("🧾 Receipt Parser")
@@ -114,7 +114,7 @@ def main():
                 st.error("Could not extract text from PDF.")
 
 if __name__ == "__main__":
-    main(), (clean_line):
+    main(), clean_line):
                 continue
                 
             # Skip lines with just special characters
