@@ -47,49 +47,53 @@ class ReceiptParser:
             return ""
 
     def extract_items(self, text):
-        """Specialized extractor for Walmart receipts"""
-        lines = text.strip().split('\n')
-        items = []
+    """Improved Walmart receipt parser with spacing + line grouping fixes"""
+    import re
 
-        # Debug: show first 20 lines
-        st.write("**First 20 lines of text:**")
-        for i, line in enumerate(lines[:20]):
-            st.text(f"{i+1:2d}: {line}")
+    lines = text.strip().split('\n')
+    lines = [line.strip() for line in lines if line.strip()]
+    cleaned_lines = []
 
-        skip_terms = [
-            'subtotal', 'total', 'tax', 'change', 'cash', 'credit', 'debit', 
-            'visa', 'mastercard', 'thank', 'receipt', 'store', 'balance', 'amount', 'payment'
-        ]
+    # Fix "4 . 9 7" to "4.97", and clean weird spaces
+    for line in lines:
+        fixed_line = re.sub(r'(\d)\s*\.\s*(\d)', r'\1.\2', line)  # 4 . 9 7 → 4.97
+        fixed_line = re.sub(r'\s{2,}', ' ', fixed_line)  # collapse large spaces
+        fixed_line = fixed_line.strip()
+        cleaned_lines.append(fixed_line)
 
-        # Pattern: "Item Name ....... 2.98"
-        pattern = re.compile(r'(.+?)\s+([\d]+\.\d{2})$')
+    # Debug: show first 20 cleaned lines
+    st.write("**First 20 cleaned lines of text:**")
+    for i, line in enumerate(cleaned_lines[:20]):
+        st.text(f"{i+1:2d}: {line}")
 
-        for line in lines:
-            line = line.strip()
-            if not line or len(line) < 4:
-                continue
+    skip_terms = ['subtotal', 'total', 'tax', 'change', 'cash', 'credit', 'debit', 
+                  'visa', 'mastercard', 'thank', 'receipt', 'store', 'balance', 'amount', 
+                  'payment', 'approval', 'terminal', 'tc#', 'st#', 'showers dr', 'mountain view']
 
-            line_lower = line.lower()
-            if any(term in line_lower for term in skip_terms):
-                continue
+    items = []
+    previous_line = ""
+    pattern_price = re.compile(r'^\$?\d+\.\d{2}$')
 
-            match = pattern.search(line)
-            if match:
-                name = match.group(1).strip()
-                price_str = match.group(2).strip()
+    for i, line in enumerate(cleaned_lines):
+        lower = line.lower()
+        if any(term in lower for term in skip_terms):
+            continue
 
-                # Clean name
-                name = re.sub(r'\d{8,}', '', name).strip()  # Remove long digit strings (UPC)
-                name = re.sub(r'[^A-Za-z0-9\s\-\.,]', '', name)
+        # Is this a standalone price line?
+        if pattern_price.match(line):
+            price = float(line.replace('$', ''))
+            # Use previous line as item name
+            item_name = re.sub(r'\d{8,}', '', previous_line).strip()
+            item_name = re.sub(r'[^A-Za-z0-9\s\-\.,]', '', item_name)
+            if item_name and len(item_name) > 3:
+                items.append({
+                    'name': item_name,
+                    'price': f"${price:.2f}"
+                })
+        else:
+            previous_line = line  # Save for possible price next line
 
-                try:
-                    price = float(price_str)
-                    if 0.01 <= price <= 500 and len(name) > 2:
-                        items.append({'name': name, 'price': f"${price:.2f}"})
-                except:
-                    continue
-
-        return items
+    return items
 
 def main():
     st.title("🧾 Walmart Receipt Parser")
