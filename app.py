@@ -114,7 +114,7 @@ def main():
                 st.error("Could not extract text from PDF.")
 
 if __name__ == "__main__":
-    main(), clean_line):
+    main(), (clean_line):
                 continue
                 
             # Skip lines with just special characters
